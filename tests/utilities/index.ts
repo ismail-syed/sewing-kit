@@ -6,12 +6,15 @@ import {Readable, Writable} from 'stream';
 
 import {
   mkdirp,
+  mkdirpSync,
   rmdir,
   writeFile,
+  writeFileSync,
   readFile,
   pathExists,
   emptyDir,
 } from 'fs-extra';
+import {vol, Volume} from 'memfs';
 import toTree from 'tree-node-cli';
 
 const commandMap = {
@@ -33,6 +36,8 @@ class TestOutputStream extends Writable {
 }
 
 export class Workspace {
+  private commandFinished = false;
+  private virtualDiskJSON: {} = {};
   constructor(public readonly root: string) {}
 
   async run<K extends keyof CommandMap>(command: K, args: string[] = []) {
@@ -40,26 +45,42 @@ export class Workspace {
     const stderr = new TestOutputStream();
     const stdin = new Readable();
 
-    await (await commandMap[command]())([...args, '--root', this.root], {
-      __internal: {stdin, stdout, stderr},
-    });
+    try {
+      this.writeVirtualFsToDisk();
+    } catch (error) {
+      console.log('Error creating test fixture dir', error);
+    }
+
+    try {
+      await (await commandMap[command]())([...args, '--root', this.root], {
+        __internal: {stdin, stdout, stderr},
+      });
+    } finally {
+      this.commandFinished = true;
+    }
   }
 
-  async writeConfig(contents: string) {
-    await writeFile(resolve(this.root, 'sewing-kit.config.js'), contents);
+  writeConfig(contents: string) {
+    this.virtualDiskJSON['sewing-kit.config.js'] = contents;
   }
 
   async writeFile(file: string, contents: string) {
-    const path = this.resolvePath(file);
-    await mkdirp(dirname(path));
-    await writeFile(path, contents);
+    this.virtualDiskJSON[file] = contents;
   }
 
   contents(file: string) {
+    if (!this.commandFinished) {
+      return null;
+    }
+
     return readFile(this.resolvePath(file), 'utf8');
   }
 
   contains(file: string) {
+    if (!this.commandFinished) {
+      return null;
+    }
+
     return pathExists(this.resolvePath(file));
   }
 
@@ -70,6 +91,14 @@ export class Workspace {
   debug() {
     // eslint-disable-next-line no-console
     console.log(toTree(this.root, {allFiles: true}));
+  }
+
+  private writeVirtualFsToDisk() {
+    for (const [key, value] of Object.entries(this.virtualDiskJSON)) {
+      const path = this.resolvePath(key);
+      mkdirpSync(dirname(path));
+      writeFileSync(path, value);
+    }
   }
 }
 
