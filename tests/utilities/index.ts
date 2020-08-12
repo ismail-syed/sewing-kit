@@ -4,18 +4,23 @@ import 'core-js/features/array/flat-map';
 import {resolve, dirname} from 'path';
 import {Readable, Writable} from 'stream';
 
-import {
-  mkdirp,
-  mkdirpSync,
-  rmdir,
-  writeFile,
-  writeFileSync,
-  readFile,
-  pathExists,
-  emptyDir,
-} from 'fs-extra';
-import {vol, Volume} from 'memfs';
+// import fs from 'fs';
+// import {
+//   mkdir,
+//   // mkdirp,
+//   // mkdirpSync,
+//   rmdir,
+//   writeFile,
+//   writeFileSync,
+//   readFile,
+//   // pathExists,
+//   // emptyDir,
+// } from 'fs';
+import {vol, Volume, fs} from 'memfs';
 import toTree from 'tree-node-cli';
+
+// import {patchFsExtra} from '../patch-fs-extra';
+import {patchFs} from 'fs-monkey';
 
 const commandMap = {
   build: () => import('../../packages/cli/src/build').then(({build}) => build),
@@ -37,19 +42,13 @@ class TestOutputStream extends Writable {
 
 export class Workspace {
   private commandFinished = false;
-  private virtualDiskJSON: {} = {};
   constructor(public readonly root: string) {}
 
   async run<K extends keyof CommandMap>(command: K, args: string[] = []) {
     const stdout = new TestOutputStream();
     const stderr = new TestOutputStream();
     const stdin = new Readable();
-
-    try {
-      this.writeVirtualFsToDisk();
-    } catch (error) {
-      console.log('Error creating test fixture dir', error);
-    }
+    patchFs(vol);
 
     try {
       await (await commandMap[command]())([...args, '--root', this.root], {
@@ -57,15 +56,18 @@ export class Workspace {
       });
     } finally {
       this.commandFinished = true;
+      // vol.reset();
     }
   }
 
   writeConfig(contents: string) {
-    this.virtualDiskJSON['sewing-kit.config.js'] = contents;
+    vol.writeFileSync(resolve(this.root, 'sewing-kit.config.js'), contents);
   }
 
   async writeFile(file: string, contents: string) {
-    this.virtualDiskJSON[file] = contents;
+    const path = this.resolvePath(file);
+    vol.mkdirpSync(dirname(path));
+    vol.writeFileSync(path, contents);
   }
 
   contents(file: string) {
@@ -73,7 +75,7 @@ export class Workspace {
       return null;
     }
 
-    return readFile(this.resolvePath(file), 'utf8');
+    return vol.readFileSync(this.resolvePath(file), 'utf8');
   }
 
   contains(file: string) {
@@ -81,7 +83,7 @@ export class Workspace {
       return null;
     }
 
-    return pathExists(this.resolvePath(file));
+    return vol.existsSync(this.resolvePath(file));
   }
 
   resolvePath(file: string) {
@@ -91,14 +93,6 @@ export class Workspace {
   debug() {
     // eslint-disable-next-line no-console
     console.log(toTree(this.root, {allFiles: true}));
-  }
-
-  private writeVirtualFsToDisk() {
-    for (const [key, value] of Object.entries(this.virtualDiskJSON)) {
-      const path = this.resolvePath(key);
-      mkdirpSync(dirname(path));
-      writeFileSync(path, value);
-    }
   }
 }
 
@@ -111,11 +105,10 @@ export async function withWorkspace(
   const workspace = new Workspace(directory);
 
   try {
-    await mkdirp(directory);
+    vol.mkdirSync(directory, {recursive: true});
     await useWorkspace(workspace);
   } finally {
-    await emptyDir(directory);
-    await rmdir(directory);
+    // fs.rmdirSync(directory, {recursive: true});
   }
 }
 
